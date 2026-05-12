@@ -2,6 +2,11 @@
 
 一个面向实验数据的本地 Web 科研制图工具。应用使用 Dash + Plotly 提供交互式预览，使用 Matplotlib + SciencePlots 导出适合论文和 PPT 的静态图表。
 
+本项目提供两种使用方式：
+
+- **一键启动版**：适合普通用户，不需要配置 Python 环境，下载 zip 后解压运行。
+- **源码版**：适合开发者或需要修改代码的用户，需要安装 Python 依赖后运行。
+
 ## 功能概览
 
 - 支持两类数据：
@@ -12,48 +17,49 @@
 - 可标注最高点/最低点，标注可在预览图中拖动。
 - 可导出 `PNG / SVG / PDF / CSV`。
 
-## 项目结构
+## 一键启动版下载
+
+如果不想配置 Python 环境，推荐使用一键启动版。
+
+### 使用方法
+
+1. 打开本仓库的 **Releases** 页面。
+2. 下载最新版本中的：
 
 ```text
-scienceplots-chart-builder/
-  README.md
-  .gitignore
-  start_plotting_app.bat
-
-  plotting_web_app/
-    app.py              # Dash Web 界面
-    chart_core.py       # 数据解析、预览图生成、SciencePlots 导出
-    run_app.py          # 推荐启动入口，会自动打开浏览器
-    requirements.txt    # Python 依赖
-    README.md           # 应用说明
-
-  示例数据/
-    光谱数据/             # SpectraSuite 光谱 txt 示例
-    器件性能_EL数据/      # 器件性能 + EL txt 示例
+SciencePlotsChartBuilder.zip
 ```
 
-## 环境要求
+3. 解压压缩包。
+4. 双击其中的启动程序。
+5. 程序会启动本地 Web 服务，并自动打开浏览器。
+
+如果浏览器没有自动打开，请手动访问：
+
+```text
+http://127.0.0.1:8050
+```
+
+### 注意事项
+
+- 首次启动可能较慢，请等待几秒。
+- 如果 Windows 出现安全提示，可以选择“更多信息”后继续运行。
+- 这是本地 Web 应用，数据在本机处理。
+- 导出的图表和汇总表会保存到程序指定的输出文件夹。
+
+## 源码版使用方法
+
+如果你想查看源码、修改程序或自行开发，可以下载源码版。
+
+### 环境要求
 
 使用源码运行时，需要提前安装：
 
-* Windows 10 / Windows 11
-* Python 3.9 或更高版本
-* pip
+- Windows 10 / Windows 11
+- Python 3.9 或更高版本
+- pip
 
-建议安装 Python 时勾选：
-
-```text
-Add Python to PATH
-```
-
-安装完成后，可以在终端中检查：
-
-```powershell
-python --version
-pip --version
-```
-
-## 安装依赖
+### 安装依赖
 
 首次使用前，在项目根目录打开 PowerShell 或终端，运行：
 
@@ -61,15 +67,9 @@ pip --version
 python -m pip install -r .\plotting_web_app\requirements.txt
 ```
 
-如果下载速度较慢，可以使用国内镜像源，例如：
+### 启动 Web 应用
 
-```powershell
-python -m pip install -r .\plotting_web_app\requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
-```
-
-## 启动 Web 应用
-
-### 方法一：双击启动
+#### 方法一：双击启动
 
 Windows 用户可以直接双击：
 
@@ -85,7 +85,7 @@ start_plotting_app.bat
 http://127.0.0.1:8050
 ```
 
-### 方法二：命令行启动
+#### 方法二：命令行启动
 
 也可以在项目根目录运行：
 
@@ -111,12 +111,32 @@ Dash is running on http://127.0.0.1:8050/
 http://127.0.0.1:8050
 ```
 
+## 项目结构
+
+```text
+scienceplots-chart-builder/
+  README.md
+  .gitignore
+  start_plotting_app.bat
+
+  plotting_web_app/
+    app.py              # Dash Web 界面
+    chart_core.py       # 数据解析、预览图生成、SciencePlots 导出
+    run_app.py          # 推荐启动入口，会自动打开浏览器
+    requirements.txt    # Python 依赖
+    README.md           # 应用说明
+
+  示例数据/
+    光谱数据/             # SpectraSuite 光谱 txt 示例
+    器件性能_EL数据/      # 器件性能 + EL txt 示例
+```
+
 ## 示例数据
 
 仓库包含 `示例数据` 文件夹：
 
-* `示例数据/光谱数据`：纯光谱数据，适合绘制原始光谱、归一化光谱、峰值对比。
-* `示例数据/器件性能_EL数据`：器件性能和 EL 光谱综合数据，适合绘制 J-V、L-V、CE-V、EQE-L、EL 光谱和 CIE 坐标。
+- `示例数据/光谱数据`：纯光谱数据，适合绘制原始光谱、归一化光谱、峰值对比。
+- `示例数据/器件性能_EL数据`：器件性能和 EL 光谱综合数据，适合绘制 J-V、L-V、CE-V、EQE-L、EL 光谱和 CIE 坐标。
 
 使用时可以在 Web 界面中选择对应的示例数据文件夹，扫描 `.txt` 数据并生成图表。
 
@@ -127,16 +147,6 @@ http://127.0.0.1:8050
 ```text
 web_app_outputs/
 ```
-
-该文件夹属于运行输出，通常不建议提交到 GitHub。
-
-建议在 `.gitignore` 中忽略：
-
-```gitignore
-web_app_outputs/
-plotting_web_app/web_app_outputs/
-```
-
 ## 常见问题
 
 ### 1. 双击 `start_plotting_app.bat` 后窗口闪退
@@ -188,3 +198,9 @@ Ctrl + C
 ```
 
 停止旧的 Dash 服务后重新启动。
+
+### 5. 一键启动版和源码版有什么区别？
+
+一键启动版适合直接使用，通常不需要安装 Python 和依赖。
+
+源码版适合查看代码、修改程序或二次开发，需要先安装 Python 依赖。
