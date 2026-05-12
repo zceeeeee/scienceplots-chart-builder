@@ -1,0 +1,24 @@
+__pycache__/
+*.pyc
+
+.vscode/
+
+build/
+dist/
+*.spec
+*.zip
+
+web_app_outputs/
+
+示例数据/**/chart_images/
+示例数据/**/scienceplots_images/
+示例数据/**/*.html
+示例数据/**/*_summary.csv
+
+*.xlsx
+
+# Legacy one-off plotting scripts kept locally
+export_charts_to_images.js
+make_device_comparison_charts.js
+make_spectra_charts.js
+plot_science_charts.py
