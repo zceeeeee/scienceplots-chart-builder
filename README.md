@@ -1,5 +1,3 @@
-
-```md
 # scienceplots-chart-builder
 
 一个面向实验数据的本地 Web 科研制图工具。应用使用 Dash + Plotly 提供交互式预览，使用 Matplotlib + SciencePlots 导出适合论文和 PPT 的静态图表。
