@@ -12,6 +12,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib import font_manager
 import plotly.graph_objects as go
 import scienceplots  # noqa: F401 - registers SciencePlots styles
 
@@ -35,10 +36,21 @@ DEFAULT_SPECTRA_DIR = ROOT / "示例数据" / "光谱数据"
 DEFAULT_DEVICE_DIR = ROOT / "示例数据" / "器件性能_EL数据"
 OUTPUT_DIR = ROOT / "web_app_outputs"
 
+CHINESE_FONT_FILES = [
+    "NotoSansSC-VF.ttf",
+    "msyh.ttc",
+    "msyhbd.ttc",
+    "simhei.ttf",
+    "simsun.ttc",
+    "Deng.ttf",
+]
+
 SPECTRA_CHARTS = {
     "raw_spectra": "原始光谱",
     "normalized_spectra": "归一化光谱",
     "peak_summary": "峰值柱状图",
+    "extrema_connection": "最高/最低点连线图",
+    "extrema_x_summary": "最高/最低点横坐标柱状图",
 }
 
 DEVICE_CHARTS = {
@@ -49,6 +61,8 @@ DEVICE_CHARTS = {
     "el_spectra": "EL 光谱",
     "cie": "CIE 坐标",
     "eff_summary": "效率汇总柱状图",
+    "extrema_connection": "最高/最低点连线图",
+    "extrema_x_summary": "最高/最低点横坐标柱状图",
 }
 
 LINE_STYLES = {
@@ -230,6 +244,20 @@ def min_point(xs: list[float], ys: list[float]) -> tuple[float, float] | None:
     return min(pairs, key=lambda item: item[1])
 
 
+def extrema_point(xs: list[float], ys: list[float], mode: str) -> tuple[float, float] | None:
+    return min_point(xs, ys) if mode == "min" else max_point(xs, ys)
+
+
+def extrema_base_chart(data_type: str, chart_type: str) -> str:
+    if chart_type in ("extrema_connection", "extrema_x_summary"):
+        return "raw_spectra" if data_type == "spectra" else "el_spectra"
+    return chart_type
+
+
+def extrema_label(mode: str) -> str:
+    return "最低点" if mode == "min" else "最高点"
+
+
 def normalize_ys(xs: list[float], ys: list[float], x_min=380, x_max=780) -> list[float]:
     visible = [y for x, y in zip(xs, ys) if x_min <= x <= x_max and math.isfinite(y)]
     denom = max(visible) if visible else 1.0
@@ -247,6 +275,7 @@ def operating_indices(d: dict[str, list[float]]) -> list[int]:
 
 
 def selected_xy(series: Series, data_type: str, chart_type: str) -> tuple[list[float], list[float], str, str, str]:
+    chart_type = extrema_base_chart(data_type, chart_type)
     d = series.data
     if data_type == "spectra":
         if chart_type == "normalized_spectra":
@@ -319,6 +348,44 @@ def build_annotations(
     return annotations
 
 
+def extrema_trace_points(series_list: list[Series], data_type: str, chart_type: str, mode: str) -> tuple[list[float], list[float], list[str]]:
+    points: list[tuple[float, float, str]] = []
+    base_chart = extrema_base_chart(data_type, chart_type)
+    for series in series_list:
+        xs, ys, *_ = selected_xy(series, data_type, base_chart)
+        point = extrema_point(xs, ys, mode)
+        if not point:
+            continue
+        x, y = point
+        points.append((x, y, series.legend))
+    points.sort(key=lambda item: item[0])
+    return [p[0] for p in points], [p[1] for p in points], [p[2] for p in points]
+
+
+def add_extrema_connection_traces(fig: go.Figure, series_list: list[Series], data_type: str, chart_type: str, line_modes: list[str]) -> None:
+    styles = {
+        "max": {"color": "#111827", "dash": "dash", "symbol": "star"},
+        "min": {"color": "#6b7280", "dash": "dot", "symbol": "x"},
+    }
+    for mode in line_modes:
+        xs, ys, labels = extrema_trace_points(series_list, data_type, chart_type, mode)
+        if len(xs) < 2:
+            continue
+        style = styles.get(mode, styles["max"])
+        fig.add_trace(
+            go.Scatter(
+                x=xs,
+                y=ys,
+                mode="lines+markers+text" if chart_type == "extrema_connection" else "lines+markers",
+                name=f"{extrema_label(mode)}连线",
+                text=labels if chart_type == "extrema_connection" else None,
+                textposition="top center",
+                line={"color": style["color"], "dash": style["dash"], "width": 2.5},
+                marker={"symbol": style["symbol"], "size": 10, "color": style["color"]},
+            )
+        )
+
+
 def make_plotly_figure(
     rows: list[dict[str, Any]],
     data_type: str,
@@ -326,61 +393,89 @@ def make_plotly_figure(
     annotation_modes: list[str] | None,
     annotation_positions: dict[str, dict[str, float]] | None,
     custom_title: str | None = None,
+    extrema_line_modes: list[str] | None = None,
 ) -> go.Figure:
     annotation_modes = annotation_modes or []
     annotation_positions = annotation_positions or {}
+    extrema_line_modes = extrema_line_modes or []
     series_list = load_series(rows, data_type)
     fig = go.Figure()
     title = ""
     x_title = ""
     y_title = ""
 
-    if chart_type in ("peak_summary", "eff_summary"):
+    if chart_type in ("peak_summary", "eff_summary", "extrema_x_summary"):
         labels = []
         values = []
         colors = []
-        for series in series_list:
-            if chart_type == "peak_summary":
-                xs, ys, *_ = selected_xy(series, data_type, "raw_spectra")
-                point = max_point(xs, ys)
-                if not point:
-                    continue
-                label = f"{series.legend}<br>{point[0]:.1f} nm"
-                value = point[1]
-                title = "Peak intensity comparison"
-                y_title = "Peak intensity (a.u.)"
-            else:
-                xs, ys, *_ = selected_xy(series, data_type, "ce_v")
-                point = max_point(xs, ys)
-                if not point:
-                    continue
-                label = series.legend
-                value = point[1]
-                title = "Current efficiency maxima"
-                y_title = "Current efficiency (cd A^-1)"
-            labels.append(label)
-            values.append(value)
-            colors.append(series.color)
-        fig.add_bar(x=labels, y=values, marker_color=colors, text=[f"{v:.3g}" for v in values], textposition="outside")
+        if chart_type == "extrema_x_summary":
+            title = "Extrema x-coordinate comparison"
+            _, _, x_axis_label, *_ = selected_xy(series_list[0], data_type, chart_type) if series_list else ([], [], "X coordinate", "", "")
+            y_title = x_axis_label or "X coordinate"
+            for mode in ("max", "min"):
+                mode_values = []
+                mode_labels = []
+                for series in series_list:
+                    xs, ys, *_ = selected_xy(series, data_type, chart_type)
+                    point = extrema_point(xs, ys, mode)
+                    if not point:
+                        continue
+                    mode_labels.append(series.legend)
+                    mode_values.append(point[0])
+                fig.add_bar(name=extrema_label(mode), x=mode_labels, y=mode_values, text=[f"{v:.3g}" for v in mode_values], textposition="outside")
+        else:
+            for series in series_list:
+                if chart_type == "peak_summary":
+                    xs, ys, *_ = selected_xy(series, data_type, "raw_spectra")
+                    point = max_point(xs, ys)
+                    if not point:
+                        continue
+                    label = f"{series.legend}<br>{point[0]:.1f} nm"
+                    value = point[1]
+                    title = "Peak intensity comparison"
+                    y_title = "Peak intensity (a.u.)"
+                else:
+                    xs, ys, *_ = selected_xy(series, data_type, "ce_v")
+                    point = max_point(xs, ys)
+                    if not point:
+                        continue
+                    label = series.legend
+                    value = point[1]
+                    title = "Current efficiency maxima"
+                    y_title = "Current efficiency (cd A^-1)"
+                labels.append(label)
+                values.append(value)
+                colors.append(series.color)
+            fig.add_bar(x=labels, y=values, marker_color=colors, text=[f"{v:.3g}" for v in values], textposition="outside")
         fig.update_layout(title=custom_title or title, xaxis_title="", yaxis_title=y_title)
+        if chart_type == "extrema_x_summary":
+            fig.update_layout(barmode="group")
         fig.update_layout(uirevision=f"{data_type}:{chart_type}:{custom_title or title}:bar")
         return fig
 
-    for series in series_list:
-        xs, ys, x_title, y_title, title = selected_xy(series, data_type, chart_type)
-        if not xs:
-            continue
-        mode = "lines+markers" if chart_type == "cie" else "lines"
-        fig.add_trace(
-            go.Scatter(
-                x=xs,
-                y=ys,
-                mode=mode,
-                name=series.legend,
-                line={"color": series.color, "dash": LINE_STYLES.get(series.line_style, LINE_STYLES["solid"])["plotly"], "width": 2},
-                marker={"symbol": series.marker, "size": 9, "color": series.color},
+    if chart_type == "extrema_connection":
+        base_chart = extrema_base_chart(data_type, chart_type)
+        if series_list:
+            _, _, x_title, y_title, _ = selected_xy(series_list[0], data_type, base_chart)
+        title = "Extrema connection"
+        add_extrema_connection_traces(fig, series_list, data_type, chart_type, ["max", "min"])
+    else:
+        for series in series_list:
+            xs, ys, x_title, y_title, title = selected_xy(series, data_type, chart_type)
+            if not xs:
+                continue
+            mode = "lines+markers" if chart_type == "cie" else "lines"
+            fig.add_trace(
+                go.Scatter(
+                    x=xs,
+                    y=ys,
+                    mode=mode,
+                    name=series.legend,
+                    line={"color": series.color, "dash": LINE_STYLES.get(series.line_style, LINE_STYLES["solid"])["plotly"], "width": 2},
+                    marker={"symbol": series.marker, "size": 9, "color": series.color},
+                )
             )
-        )
+        add_extrema_connection_traces(fig, series_list, data_type, chart_type, extrema_line_modes)
 
     annotations = build_annotations(series_list, data_type, chart_type, annotation_modes, annotation_positions)
     fig.update_layout(
@@ -398,11 +493,12 @@ def make_plotly_figure(
         fig.update_yaxes(type="log")
     if chart_type == "eqe_l":
         fig.update_xaxes(type="log")
-    if chart_type in ("normalized_spectra", "el_spectra"):
+    range_chart = extrema_base_chart(data_type, chart_type)
+    if range_chart in ("normalized_spectra", "el_spectra"):
         fig.update_yaxes(range=[0, 1.3])
-    if chart_type in ("raw_spectra", "normalized_spectra", "el_spectra"):
+    if range_chart in ("raw_spectra", "normalized_spectra", "el_spectra"):
         fig.update_xaxes(range=[380, 780])
-    if chart_type == "cie":
+    if range_chart == "cie":
         fig.update_xaxes(range=[0, 0.8])
         fig.update_yaxes(range=[0, 0.85], scaleanchor="x", scaleratio=1)
     return fig
@@ -436,12 +532,28 @@ def update_positions_from_relayout(
     return positions
 
 
+def preferred_chinese_font() -> str:
+    font_dirs = [Path("C:/Windows/Fonts"), ROOT / "fonts"]
+    for font_dir in font_dirs:
+        for font_file in CHINESE_FONT_FILES:
+            path = font_dir / font_file
+            if not path.exists():
+                continue
+            try:
+                font_manager.fontManager.addfont(str(path))
+                return font_manager.FontProperties(fname=str(path)).get_name()
+            except RuntimeError:
+                continue
+    return "DejaVu Sans"
+
+
 def apply_science_style() -> None:
     plt.style.use(["science", "nature", "no-latex"])
+    chinese_font = preferred_chinese_font()
     plt.rcParams.update(
         {
             "font.family": "sans-serif",
-            "font.sans-serif": ["Arial", "Microsoft YaHei", "SimHei", "DejaVu Sans"],
+            "font.sans-serif": [chinese_font, "Noto Sans CJK SC", "Microsoft YaHei", "SimHei", "SimSun", "DejaVu Sans", "Arial"],
             "font.size": 7.8,
             "axes.labelsize": 8.4,
             "axes.titlesize": 9.0,
@@ -449,6 +561,8 @@ def apply_science_style() -> None:
             "xtick.labelsize": 8,
             "ytick.labelsize": 8,
             "savefig.dpi": 400,
+            "svg.fonttype": "path",
+            "pdf.fonttype": 42,
             "axes.unicode_minus": False,
         }
     )
@@ -470,6 +584,32 @@ def mpl_annotate(ax, x: float, y: float, text: str, color: str, offset: dict[str
     )
 
 
+def mpl_plot_extrema_connections(ax, series_list: list[Series], data_type: str, chart_type: str, line_modes: list[str], with_labels: bool = False) -> None:
+    styles = {
+        "max": {"color": "#111827", "linestyle": "--", "marker": "*"},
+        "min": {"color": "#6b7280", "linestyle": ":", "marker": "x"},
+    }
+    for mode in line_modes:
+        xs, ys, labels = extrema_trace_points(series_list, data_type, chart_type, mode)
+        if len(xs) < 2:
+            continue
+        style = styles.get(mode, styles["max"])
+        ax.plot(
+            xs,
+            ys,
+            color=style["color"],
+            linestyle=style["linestyle"],
+            marker=style["marker"],
+            lw=1.15,
+            ms=5.2,
+            label=f"{extrema_label(mode)}连线",
+            zorder=5,
+        )
+        if with_labels:
+            for x, y, label in zip(xs, ys, labels):
+                ax.text(x, y, label, fontsize=6.2, ha="center", va="bottom", color=style["color"])
+
+
 def export_science_figure(
     rows: list[dict[str, Any]],
     data_type: str,
@@ -479,9 +619,11 @@ def export_science_figure(
     custom_title: str | None = None,
     file_stem: str | None = None,
     export_formats: list[str] | None = None,
+    extrema_line_modes: list[str] | None = None,
 ) -> list[Path]:
     annotation_modes = annotation_modes or []
     annotation_positions = annotation_positions or {}
+    extrema_line_modes = extrema_line_modes or []
     series_list = load_series(rows, data_type)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     apply_science_style()
@@ -489,62 +631,110 @@ def export_science_figure(
     export_formats = export_formats or ["png", "svg", "pdf", "csv"]
     paths: list[Path] = []
 
-    if chart_type in ("peak_summary", "eff_summary"):
+    if chart_type in ("peak_summary", "eff_summary", "extrema_x_summary"):
         fig, ax = plt.subplots(figsize=(4.7, 3.25))
         labels, values, colors = [], [], []
-        for series in series_list:
-            if chart_type == "peak_summary":
-                xs, ys, *_ = selected_xy(series, data_type, "raw_spectra")
-                point = max_point(xs, ys)
-                ylabel = "Peak intensity (a.u.)"
-                title = "Peak intensity comparison"
-            else:
-                xs, ys, *_ = selected_xy(series, data_type, "ce_v")
-                point = max_point(xs, ys)
-                ylabel = "Current efficiency (cd A$^{-1}$)"
-                title = "Current efficiency maxima"
-            if not point:
-                continue
-            labels.append(series.legend)
-            values.append(point[1])
-            colors.append(series.color)
-        bars = ax.bar(labels, values, color=colors, edgecolor="black", linewidth=0.35)
-        for bar, value in zip(bars, values):
-            ax.text(bar.get_x() + bar.get_width() / 2, value * 1.02, f"{value:.3g}", ha="center", va="bottom", fontsize=6.8)
+        title = ""
+        ylabel = ""
+        if chart_type == "extrema_x_summary":
+            title = "Extrema x-coordinate comparison"
+            _, _, ylabel, *_ = selected_xy(series_list[0], data_type, chart_type) if series_list else ([], [], "X coordinate", "", "")
+            label_order = [series.legend for series in series_list]
+            positions = list(range(len(label_order)))
+            width = 0.36
+            for offset, mode in ((-width / 2, "max"), (width / 2, "min")):
+                values = []
+                for series in series_list:
+                    xs, ys, *_ = selected_xy(series, data_type, chart_type)
+                    point = extrema_point(xs, ys, mode)
+                    values.append(point[0] if point else math.nan)
+                bars = ax.bar([p + offset for p in positions], values, width=width, label=extrema_label(mode), linewidth=0.35)
+                for bar, value in zip(bars, values):
+                    if not math.isfinite(value):
+                        continue
+                    ax.text(bar.get_x() + bar.get_width() / 2, value * 1.002, f"{value:.3g}", ha="center", va="bottom", fontsize=6.6)
+            ax.set_xticks(positions, label_order)
+            ax.legend(frameon=False)
+            finite_values = []
+            for series in series_list:
+                xs, ys, *_ = selected_xy(series, data_type, chart_type)
+                for mode in ("max", "min"):
+                    point = extrema_point(xs, ys, mode)
+                    if point:
+                        finite_values.append(point[0])
+            if finite_values:
+                low, high = min(finite_values), max(finite_values)
+                if low == high:
+                    pad = abs(high) * 0.02 or 1
+                    low, high = low - pad, high + pad
+                else:
+                    pad = (high - low) * 0.08
+                    low, high = low - pad, high + pad
+                ax.set_ylim(low, high)
+        else:
+            for series in series_list:
+                if chart_type == "peak_summary":
+                    xs, ys, *_ = selected_xy(series, data_type, "raw_spectra")
+                    point = max_point(xs, ys)
+                    ylabel = "Peak intensity (a.u.)"
+                    title = "Peak intensity comparison"
+                else:
+                    xs, ys, *_ = selected_xy(series, data_type, "ce_v")
+                    point = max_point(xs, ys)
+                    ylabel = "Current efficiency (cd A$^{-1}$)"
+                    title = "Current efficiency maxima"
+                if not point:
+                    continue
+                labels.append(series.legend)
+                values.append(point[1])
+                colors.append(series.color)
+            bars = ax.bar(labels, values, color=colors, edgecolor="black", linewidth=0.35)
+            for bar, value in zip(bars, values):
+                ax.text(bar.get_x() + bar.get_width() / 2, value * 1.02, f"{value:.3g}", ha="center", va="bottom", fontsize=6.8)
+            ax.set_ylim(0, max(values) * 1.22 if values else 1)
         ax.set_ylabel(ylabel)
         ax.set_title(custom_title or title, pad=7)
-        ax.set_ylim(0, max(values) * 1.22 if values else 1)
     else:
         fig, ax = plt.subplots(figsize=(5.8, 3.65))
         title = ""
-        for series in series_list:
-            xs, ys, xlabel, ylabel, title = selected_xy(series, data_type, chart_type)
-            if not xs:
-                continue
-            line_style = LINE_STYLES.get(series.line_style, LINE_STYLES["solid"])["mpl"]
-            marker = MPL_MARKERS.get(series.marker, "o") if chart_type == "cie" else None
-            if chart_type in ("jv", "lv"):
-                ax.semilogy(xs, ys, line_style, color=series.color, lw=1.05, label=series.legend, marker=marker)
-            elif chart_type == "eqe_l":
-                ax.semilogx(xs, ys, line_style, color=series.color, lw=1.05, label=series.legend)
-            else:
-                ax.plot(xs, ys, line_style, color=series.color, lw=1.05, label=series.legend, marker=marker)
-            for mode in annotation_modes:
-                point = max_point(xs, ys) if mode == "max" else min_point(xs, ys)
-                if not point:
+        xlabel = ""
+        ylabel = ""
+        if chart_type == "extrema_connection":
+            if series_list:
+                _, _, xlabel, ylabel, _ = selected_xy(series_list[0], data_type, chart_type)
+            title = "Extrema connection"
+            mpl_plot_extrema_connections(ax, series_list, data_type, chart_type, ["max", "min"], with_labels=True)
+        else:
+            for series in series_list:
+                xs, ys, xlabel, ylabel, title = selected_xy(series, data_type, chart_type)
+                if not xs:
                     continue
-                key = point_key(series, mode)
-                x, y = point
-                label = f"{series.legend}: ({x:.3g}, {y:.3g})"
-                mpl_annotate(ax, x, y, label, series.color, annotation_positions.get(key))
+                line_style = LINE_STYLES.get(series.line_style, LINE_STYLES["solid"])["mpl"]
+                marker = MPL_MARKERS.get(series.marker, "o") if chart_type == "cie" else None
+                if chart_type in ("jv", "lv"):
+                    ax.semilogy(xs, ys, line_style, color=series.color, lw=1.05, label=series.legend, marker=marker)
+                elif chart_type == "eqe_l":
+                    ax.semilogx(xs, ys, line_style, color=series.color, lw=1.05, label=series.legend)
+                else:
+                    ax.plot(xs, ys, line_style, color=series.color, lw=1.05, label=series.legend, marker=marker)
+                for mode in annotation_modes:
+                    point = max_point(xs, ys) if mode == "max" else min_point(xs, ys)
+                    if not point:
+                        continue
+                    key = point_key(series, mode)
+                    x, y = point
+                    label = f"{series.legend}: ({x:.3g}, {y:.3g})"
+                    mpl_annotate(ax, x, y, label, series.color, annotation_positions.get(key))
+            mpl_plot_extrema_connections(ax, series_list, data_type, chart_type, extrema_line_modes)
         ax.set_xlabel(xlabel)
         ax.set_ylabel(ylabel)
         ax.set_title(custom_title or title, pad=7)
-        if chart_type in ("normalized_spectra", "el_spectra"):
+        range_chart = extrema_base_chart(data_type, chart_type)
+        if range_chart in ("normalized_spectra", "el_spectra"):
             ax.set_ylim(0, 1.32)
-        if chart_type in ("raw_spectra", "normalized_spectra", "el_spectra"):
+        if range_chart in ("raw_spectra", "normalized_spectra", "el_spectra"):
             ax.set_xlim(380, 780)
-        if chart_type == "cie":
+        if range_chart == "cie":
             ax.set_xlim(0, 0.8)
             ax.set_ylim(0, 0.85)
         ax.legend(frameon=False, loc="center left", bbox_to_anchor=(1.02, 0.5), borderaxespad=0.0)

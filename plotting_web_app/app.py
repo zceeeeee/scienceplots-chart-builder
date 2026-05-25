@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+import os
+import subprocess
 from pathlib import Path
 
 from dash import Dash, Input, Output, State, callback_context, dash_table, dcc, html, no_update
@@ -20,6 +23,7 @@ from chart_core import (
 
 
 COLOR_PALETTE = ["#b91c1c", "#ef4444", "#f97316", "#16a34a", "#2563eb", "#7c3aed", "#111827"]
+HEX_COLOR_RE = re.compile(r"^#?[0-9a-fA-F]{6}$")
 
 
 def chart_options(data_type: str) -> list[dict[str, str]]:
@@ -34,6 +38,40 @@ def default_chart(data_type: str) -> str:
 def default_title(data_type: str, chart_type: str) -> str:
     labels = SPECTRA_CHARTS if data_type == "spectra" else DEVICE_CHARTS
     return labels.get(chart_type, "Chart")
+
+
+def normalize_hex_color(value: str | None, fallback: str = "#111827") -> str:
+    if not value:
+        return fallback
+    value = value.strip()
+    if not HEX_COLOR_RE.match(value):
+        return fallback
+    if not value.startswith("#"):
+        value = f"#{value}"
+    return value.lower()
+
+
+def hex_text_color(hex_color: str) -> str:
+    color = normalize_hex_color(hex_color)
+    red = int(color[1:3], 16)
+    green = int(color[3:5], 16)
+    blue = int(color[5:7], 16)
+    luminance = (0.299 * red + 0.587 * green + 0.114 * blue) / 255
+    return "#111827" if luminance > 0.62 else "#ffffff"
+
+
+def color_cell_styles(rows: list[dict] | None) -> list[dict]:
+    styles = list(BASE_STYLE_CELL_CONDITIONAL)
+    for index, row in enumerate(rows or []):
+        color = normalize_hex_color(row.get("color"), COLOR_PALETTE[index % len(COLOR_PALETTE)])
+        styles.append(
+            {
+                "if": {"row_index": index, "column_id": "color"},
+                "backgroundColor": color,
+                "color": hex_text_color(color),
+            }
+        )
+    return styles
 
 
 def make_row(file_path: str, index: int, data_type: str) -> dict:
@@ -54,6 +92,13 @@ def make_row(file_path: str, index: int, data_type: str) -> dict:
 
 
 def open_folder_dialog(initial_dir: str | None = None) -> str | None:
+    selected = open_tk_folder_dialog(initial_dir)
+    if selected:
+        return selected
+    return open_windows_folder_dialog(initial_dir)
+
+
+def open_tk_folder_dialog(initial_dir: str | None = None) -> str | None:
     try:
         import tkinter as tk
         from tkinter import filedialog
@@ -74,13 +119,45 @@ def open_folder_dialog(initial_dir: str | None = None) -> str | None:
     return selected or None
 
 
+def open_windows_folder_dialog(initial_dir: str | None = None) -> str | None:
+    script = """
+Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.Description = '选择数据文件夹'
+$dialog.ShowNewFolderButton = $false
+if ($env:SCIENCEPLOTS_INITIAL_DIR -and (Test-Path -LiteralPath $env:SCIENCEPLOTS_INITIAL_DIR)) {
+    $dialog.SelectedPath = $env:SCIENCEPLOTS_INITIAL_DIR
+}
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    Write-Output $dialog.SelectedPath
+}
+"""
+    env = os.environ.copy()
+    if initial_dir:
+        env["SCIENCEPLOTS_INITIAL_DIR"] = initial_dir
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-STA", "-Command", script],
+            capture_output=True,
+            check=False,
+            env=env,
+            text=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    selected = result.stdout.strip().splitlines()
+    return selected[-1] if selected else None
+
+
 app = Dash(__name__)
 app.title = "SciencePlots Chart Builder"
 
 TABLE_COLUMNS = [
     {"name": "样品名", "id": "sample", "editable": True},
     {"name": "图例文字", "id": "legend", "editable": True},
-    {"name": "颜色", "id": "color", "editable": True},
+    {"name": "颜色", "id": "color", "editable": False},
     {"name": "线型", "id": "line_style", "presentation": "dropdown", "editable": True},
     {"name": "Marker", "id": "marker", "presentation": "dropdown", "editable": True},
     {"name": "文件", "id": "file"},
@@ -93,6 +170,13 @@ TABLE_DROPDOWNS = {
     "line_style": {"options": [{"label": key, "value": key} for key in LINE_STYLES.keys()]},
     "marker": {"options": [{"label": key, "value": key} for key in MARKERS]},
 }
+
+BASE_STYLE_CELL_CONDITIONAL = [
+    {"if": {"column_id": "path"}, "minWidth": "420px", "maxWidth": "680px"},
+    {"if": {"column_id": "color"}, "width": "115px", "fontFamily": "Consolas", "cursor": "pointer"},
+    {"if": {"column_id": "line_style"}, "width": "90px"},
+    {"if": {"column_id": "marker"}, "width": "120px"},
+]
 
 DEFAULT_EXPORT_FORMATS = ["png", "svg", "pdf", "csv"]
 
@@ -184,6 +268,21 @@ app.layout = html.Div(
                         ),
                         html.Div(
                             [
+                                html.Label("极值点连线"),
+                                dcc.Checklist(
+                                    id="extrema-line-modes",
+                                    options=[
+                                        {"label": "连接最高点", "value": "max"},
+                                        {"label": "连接最低点", "value": "min"},
+                                    ],
+                                    value=[],
+                                ),
+                                html.Div("勾选后会在当前图中叠加连线；也可在图表类型中选择“最高/最低点连线图”单独成图。", className="hint"),
+                            ],
+                            className="control-block",
+                        ),
+                        html.Div(
+                            [
                                 html.Label("导出文件名"),
                                 dcc.Input(id="export-filename", value="chart", type="text", debounce=False),
                                 html.Label("导出类型", className="inline-label"),
@@ -209,6 +308,18 @@ app.layout = html.Div(
                 html.Div(
                     [
                         html.H2("样品文件列表"),
+                        html.Div(
+                            [
+                                html.Div(id="color-picker-label", className="color-picker-label"),
+                                dcc.Input(id="color-picker", type="color", value=COLOR_PALETTE[0], className="color-picker-input"),
+                                dcc.Input(id="color-hex-input", type="text", value=COLOR_PALETTE[0], debounce=False, className="color-hex-input"),
+                                html.Div("点击颜色列后选色。", className="color-picker-hint"),
+                            ],
+                            id="color-picker-panel",
+                            className="color-picker-panel",
+                            style={"display": "none"},
+                        ),
+                        dcc.Store(id="color-picker-row"),
                         dash_table.DataTable(
                             id="sample-table",
                             columns=TABLE_COLUMNS,
@@ -226,12 +337,7 @@ app.layout = html.Div(
                                 "whiteSpace": "normal",
                                 "textAlign": "left",
                             },
-                            style_cell_conditional=[
-                                {"if": {"column_id": "path"}, "minWidth": "420px", "maxWidth": "680px"},
-                                {"if": {"column_id": "color"}, "width": "95px", "fontFamily": "Consolas"},
-                                {"if": {"column_id": "line_style"}, "width": "90px"},
-                                {"if": {"column_id": "marker"}, "width": "120px"},
-                            ],
+                            style_cell_conditional=BASE_STYLE_CELL_CONDITIONAL,
                             style_header={"fontWeight": "700", "backgroundColor": "#f3f4f6"},
                         ),
                         html.H2("交互预览"),
@@ -276,6 +382,9 @@ app.index_string = """
             label { display: block; font-size: 13px; font-weight: 700; margin-bottom: 7px; color: #374151; }
             .inline-label { margin-top: 12px; }
             input[type="text"] { width: 100%; box-sizing: border-box; padding: 8px 9px; border: 1px solid #d1d5db; border-radius: 6px; }
+            input[type="color"] { box-sizing: border-box; appearance: auto; -webkit-appearance: none; border: 1px solid #d1d5db; background: #ffffff; border-radius: 6px; inline-size: 48px; block-size: 38px; min-width: 48px; max-width: 48px; width: 48px !important; height: 38px; padding: 3px; cursor: pointer; flex: 0 0 48px; }
+            input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+            input[type="color"]::-webkit-color-swatch { border: none; border-radius: 4px; }
             button { border: 1px solid #111827; background: #111827; color: white; border-radius: 6px; padding: 8px 11px; margin-top: 8px; cursor: pointer; }
             button:hover { background: #374151; }
             .secondary-button { margin-left: 8px; background: #ffffff; color: #111827; }
@@ -284,6 +393,11 @@ app.index_string = """
             .status { margin-top: 8px; color: #4b5563; font-size: 12px; line-height: 1.45; }
             .hint { margin-top: 8px; color: #6b7280; font-size: 12px; line-height: 1.45; }
             .pre-wrap { white-space: pre-wrap; }
+            .color-picker-panel { align-items: center; flex-wrap: wrap; gap: 10px; margin: -2px 0 10px; padding: 10px; border: 1px solid #d1d5db; border-radius: 8px; background: #f9fafb; max-width: 420px; }
+            .color-picker-label { min-width: 100px; font-size: 13px; font-weight: 700; color: #374151; }
+            .color-picker-input { flex: 0 0 auto; }
+            .color-hex-input { width: 115px !important; font-family: Consolas, monospace; text-transform: lowercase; }
+            .color-picker-hint { color: #6b7280; font-size: 12px; white-space: nowrap; }
             @media (max-width: 980px) { .app-grid { grid-template-columns: 1fr; } }
         </style>
     </head>
@@ -379,6 +493,72 @@ def edit_file_list(_add_clicks, _clear_clicks, selected_files, rows, data_type):
 
 
 @app.callback(
+    Output("color-picker-panel", "style"),
+    Output("color-picker", "value"),
+    Output("color-hex-input", "value"),
+    Output("color-picker-label", "children"),
+    Output("color-picker-row", "data"),
+    Input("sample-table", "active_cell"),
+    State("sample-table", "data"),
+)
+def show_color_picker(active_cell, rows):
+    if not active_cell or active_cell.get("column_id") != "color":
+        return {"display": "none"}, no_update, no_update, "", None
+    row_index = active_cell.get("row")
+    rows = rows or []
+    if row_index is None or row_index >= len(rows):
+        return {"display": "none"}, no_update, no_update, "", None
+    row = rows[row_index]
+    color = normalize_hex_color(row.get("color"), COLOR_PALETTE[row_index % len(COLOR_PALETTE)])
+    label = f"正在编辑：{row.get('sample') or row.get('legend') or row_index + 1}"
+    return {"display": "flex"}, color, color, label, row_index
+
+
+@app.callback(
+    Output("sample-table", "data", allow_duplicate=True),
+    Output("color-hex-input", "value", allow_duplicate=True),
+    Input("color-picker", "value"),
+    State("color-picker-row", "data"),
+    State("sample-table", "data"),
+    prevent_initial_call=True,
+)
+def apply_color_picker(color, row_index, rows):
+    rows = rows or []
+    if row_index is None or row_index >= len(rows):
+        return no_update, no_update
+    color = normalize_hex_color(color, rows[row_index].get("color", COLOR_PALETTE[row_index % len(COLOR_PALETTE)]))
+    next_rows = [dict(row) for row in rows]
+    next_rows[row_index]["color"] = color
+    return next_rows, color
+
+
+@app.callback(
+    Output("sample-table", "data", allow_duplicate=True),
+    Output("color-picker", "value", allow_duplicate=True),
+    Input("color-hex-input", "value"),
+    State("color-picker-row", "data"),
+    State("sample-table", "data"),
+    prevent_initial_call=True,
+)
+def apply_color_text(color, row_index, rows):
+    rows = rows or []
+    if row_index is None or row_index >= len(rows) or not color or not HEX_COLOR_RE.match(color.strip()):
+        return no_update, no_update
+    color = normalize_hex_color(color)
+    next_rows = [dict(row) for row in rows]
+    next_rows[row_index]["color"] = color
+    return next_rows, color
+
+
+@app.callback(
+    Output("sample-table", "style_cell_conditional"),
+    Input("sample-table", "data"),
+)
+def update_color_cell_styles(rows):
+    return color_cell_styles(rows)
+
+
+@app.callback(
     Output("annotation-store", "data", allow_duplicate=True),
     Input("preview-graph", "relayoutData"),
     State("annotation-store", "data"),
@@ -396,10 +576,11 @@ def remember_annotation_positions(relayout_data, current, figure):
     Input("chart-type", "value"),
     Input("chart-title", "value"),
     Input("annotation-modes", "value"),
+    Input("extrema-line-modes", "value"),
     Input("annotation-store", "data"),
 )
-def update_preview(rows, data_type, chart_type, chart_title, annotation_modes, annotation_store):
-    return make_plotly_figure(rows or [], data_type, chart_type, annotation_modes or [], annotation_store or {}, chart_title)
+def update_preview(rows, data_type, chart_type, chart_title, annotation_modes, extrema_line_modes, annotation_store):
+    return make_plotly_figure(rows or [], data_type, chart_type, annotation_modes or [], annotation_store or {}, chart_title, extrema_line_modes or [])
 
 
 @app.callback(
@@ -412,10 +593,11 @@ def update_preview(rows, data_type, chart_type, chart_title, annotation_modes, a
     State("export-filename", "value"),
     State("export-formats", "value"),
     State("annotation-modes", "value"),
+    State("extrema-line-modes", "value"),
     State("annotation-store", "data"),
     prevent_initial_call=True,
 )
-def export_current_chart(_n_clicks, rows, data_type, chart_type, chart_title, export_filename, export_formats, annotation_modes, annotation_store):
+def export_current_chart(_n_clicks, rows, data_type, chart_type, chart_title, export_filename, export_formats, annotation_modes, extrema_line_modes, annotation_store):
     if not rows:
         return "请先添加至少一个文件。"
     if not export_formats:
@@ -430,6 +612,7 @@ def export_current_chart(_n_clicks, rows, data_type, chart_type, chart_title, ex
             custom_title=chart_title,
             file_stem=export_filename,
             export_formats=export_formats,
+            extrema_line_modes=extrema_line_modes or [],
         )
     except Exception as exc:  # noqa: BLE001 - shown to local user
         return f"导出失败：{exc}"
